@@ -1,18 +1,22 @@
-// типы для заданий
+export type Option = {
+  id: string;
+  label: string;
+};
+
 export type SingleChoiceTask = {
   id: string;
   kind: "single-choice";
   topic: string;
-  text: string;
-  options: string[];
+  prompt: string;  
   code?: string;
+  options: Option[];
 };
 
 export type ShortTextTask = {
   id: string;
   kind: "short-text";
   topic: string;
-  text: string;
+  prompt: string;    
   code?: string;
 };
 
