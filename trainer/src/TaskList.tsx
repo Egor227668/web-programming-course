@@ -1,42 +1,28 @@
-import type { Task, Answer } from "./domain";
+import type { Answer, Task } from "./domain";
+import { TaskCard } from "./TaskCard";
 
 type TaskListProps = {
   tasks: Task[];
-  selectedId: string;
   answers: Answer[];
-  onSelect: (id: string) => void;
+  disabled?: boolean;
+  onAnswerChange: (answer: Answer) => void;
 };
 
-export function TaskList({ tasks, selectedId, answers, onSelect }: TaskListProps) {
-  // Проверяем, есть ли валидный ответ на задание
-  const isAnswered = (taskId: string) => {
-    const ans = answers.find(a => a.taskId === taskId);
-    if (!ans) return false;
-    if (ans.kind === "short-text") return ans.text.trim().length > 0;
-    return !!ans.optionId;
-  };
-
+export function TaskList({ tasks, answers, disabled, onAnswerChange }: TaskListProps) {
   return (
-    <ul className="task-list">
-      {tasks.map((task) => (
-        <li key={task.id}>
-          <button
-            type="button"
-            className={
-              task.id === selectedId
-                ? "task-button task-button--active"
-                : "task-button"
-            }
-            onClick={() => onSelect(task.id)}
-            aria-pressed={task.id === selectedId}
-          >
-            <span className="task-button__id">
-              {isAnswered(task.id) ? "✓" : "○"} {task.id}
-            </span>
-            <span className="task-button__topic">{task.topic}</span>
-          </button>
-        </li>
-      ))}
-    </ul>
+    <div>
+      {tasks.map((task) => {
+        const currentAnswer = answers.find((a) => a.taskId === task.id);
+        return (
+          <TaskCard
+            key={task.id}
+            task={task}
+            answer={currentAnswer}
+            disabled={disabled}
+            onAnswerChange={onAnswerChange}
+          />
+        );
+      })}
+    </div>
   );
 }

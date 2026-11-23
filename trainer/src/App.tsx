@@ -1,140 +1,167 @@
-import { useState } from "react";
-import { mainSet } from "./demo";
-import { findTaskById } from "./domain";
-import type { Answer } from "./domain";
+import { useEffect, useReducer, useState } from "react";
+import type { Answer, TrainingSet } from "./domain";
+import { setAnswer, trySubmit } from "./attemptRules";
 import { TaskList } from "./TaskList";
-import { TaskCard } from "./TaskCard";
+import { mainSet } from "./demo"; // Берем данные из твоего demo.ts
 
-export default function App() {
-  // 1. Состояния
-  const [selectedId, setSelectedId] = useState<string>(mainSet.tasks[0]?.id ?? "");
-  const [answers, setAnswers] = useState<Answer[]>([]);
-  const [isSubmitted, setIsSubmitted] = useState<boolean>(false);
+type Draft = {
+  version: 1;
+  setId: string;
+  taskId: string;
+  answers: Answer[];
+  status: "in-progress" | "submitted";
+};
 
-  // 2. Вычисляем текущее задание и текущий ответ на него
-  const selectedTask = findTaskById(mainSet, selectedId);
-  const currentAnswer = answers.find((a) => a.taskId === selectedId);
+type State = Draft & {
+  currentIndex: number;
+};
 
-  // 3. Обработка ввода ответа (иммутабельное обновление)
-  const handleAnswerChange = (newAnswer: Answer) => {
-    setAnswers((prev) => {
-      const exists = prev.find((a) => a.taskId === newAnswer.taskId);
-      if (exists) {
-        return prev.map((a) => (a.taskId === newAnswer.taskId ? newAnswer : a));
-      }
-      return [...prev, newAnswer];
+type Action =
+  | { type: "answerChanged"; answer: Answer }
+  | { type: "moved"; index: number }
+  | { type: "restored"; draft: Draft }
+  | { type: "reset"; initial: Draft }
+  | { type: "submitted" };
+
+const getInitialState = (set: TrainingSet): State => ({
+  version: 1,
+  setId: set.id,
+  taskId: set.tasks[0]?.id ?? "",
+  answers: [],
+  status: "in-progress",
+  currentIndex: 0,
+});
+
+function reducer(state: State, action: Action): State {
+  if (state.status === "submitted" && action.type === "answerChanged") {
+    return state;
+  }
+
+  switch (action.type) {
+    case "answerChanged":
+      return { ...state, answers: setAnswer(state.answers, action.answer) };
+    case "moved":
+      return { ...state, currentIndex: action.index, taskId: state.taskId };
+    case "restored":
+      return { ...action.draft, currentIndex: 0 };
+    case "reset":
+      return { ...action.initial, currentIndex: 0 };
+    case "submitted":
+      return { ...state, status: "submitted" };
+    default:
+      return state;
+  }
+}
+
+function loadDraft(key: string, expectedSetId: string): Draft | null {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+
+    const data: unknown = JSON.parse(raw);
+    if (typeof data !== "object" || data === null) return null;
+    const d = data as Record<string, unknown>;
+
+    if (d.version !== 1 || d.setId !== expectedSetId) return null;
+    if (d.status !== "in-progress" && d.status !== "submitted") return null;
+    if (!Array.isArray(d.answers)) return null;
+    if (typeof d.taskId !== "string") return null;
+
+    const safeAnswers = d.answers.every((a: unknown) => {
+      if (typeof a !== "object" || a === null) return false;
+      const ans = a as Record<string, unknown>;
+      return typeof ans.taskId === "string" &&
+             (ans.kind === "short-text" ? typeof ans.text === "string" : ans.kind === "single-choice");
     });
-  };
 
-  // 4. Вычисление прогресса (на лету)
-  const isAnswerValid = (ans: Answer | undefined) => {
-    if (!ans) return false;
-    if (ans.kind === "short-text") return ans.text.trim().length > 0;
-    return !!ans.optionId;
-  };
+    if (!safeAnswers) return null;
+    return d as Draft;
+  } catch {
+    return null;
+  }
+}
+
+export function App() { // Именованный экспорт!
+  const trainingSet = mainSet;
   
-  const answeredCount = mainSet.tasks.filter((t) => 
-    isAnswerValid(answers.find((a) => a.taskId === t.id))
-  ).length;
-  const totalTasks = mainSet.tasks.length;
+  const [state, dispatch] = useReducer(reducer, getInitialState(trainingSet));
+  const [warning, setWarning] = useState<string | null>(null);
+  const [isRestoring, setIsRestoring] = useState(true);
 
-  // 5. Навигация вперед/назад
-  const currentIndex = mainSet.tasks.findIndex((t) => t.id === selectedId);
-  const handlePrev = () => {
-    if (currentIndex > 0) setSelectedId(mainSet.tasks[currentIndex - 1].id);
-  };
-  const handleNext = () => {
-    if (currentIndex < totalTasks - 1) setSelectedId(mainSet.tasks[currentIndex + 1].id);
-  };
-
-  // 6. Завершение попытки с проверкой пропусков
-  const handleFinish = () => {
-    const missed = mainSet.tasks.filter((t) => 
-      !isAnswerValid(answers.find((a) => a.taskId === t.id))
-    );
-    
-    if (missed.length > 0) {
-      const confirmMsg = `Вы пропустили задания: ${missed.map(t => t.id).join(", ")}. Завершить попытку?`;
-      if (!window.confirm(confirmMsg)) return; // Если отмена — выходим
+  useEffect(() => {
+    const draft = loadDraft("trainer-draft", trainingSet.id);
+    if (draft) {
+      dispatch({ type: "restored", draft });
     }
-    setIsSubmitted(true);
+    setIsRestoring(false);
+  }, [trainingSet.id]);
+
+  useEffect(() => {
+    if (isRestoring) return;
+
+    const draft: Draft = {
+      version: 1,
+      setId: state.setId,
+      taskId: state.taskId,
+      answers: state.answers,
+      status: state.status,
+    };
+
+    try {
+      localStorage.setItem("trainer-draft", JSON.stringify(draft));
+    } catch {
+      setWarning("Не удалось сохранить черновик. Ввод продолжается, но данные не сохранятся.");
+    }
+  }, [state, isRestoring]);
+
+  const handleAnswerChange = (answer: Answer) => {
+    dispatch({ type: "answerChanged", answer });
   };
 
-  // 7. Старт новой попытки
-  const handleRestart = () => {
-    setAnswers([]);
-    setSelectedId(mainSet.tasks[0].id);
-    setIsSubmitted(false);
+  const handleReset = () => {
+    try {
+      localStorage.removeItem("trainer-draft");
+    } catch {}
+    dispatch({ type: "reset", initial: getInitialState(trainingSet) });
+    setWarning(null);
   };
+
+  const handleSubmit = () => {
+    const result = trySubmit(trainingSet.tasks, state.answers);
+    if (!result.ok) {
+      setWarning(`Не заполнены ответы для: ${result.missingIds.join(", ")}`);
+      return;
+    }
+    dispatch({ type: "submitted" });
+    setWarning(null);
+  };
+
+  if (isRestoring) return <div>Загрузка черновика...</div>;
 
   return (
-    <main className="app">
-      <header className="app__header">
-        <h1>{mainSet.title}</h1>
-        <p className="app__count">
-          Прогресс: {answeredCount} из {totalTasks} 
-          {isSubmitted && " (Завершено)"}
-        </p>
-      </header>
+    <div style={{ padding: "20px" }}>
+      <h1>{trainingSet.title}</h1>
+      {warning && <div style={{ color: "red", marginBottom: "10px" }}>{warning}</div>}
 
-      <div className="app__layout">
-        <aside className="app__sidebar">
-          <TaskList
-            tasks={mainSet.tasks}
-            selectedId={selectedId}
-            answers={answers}
-            onSelect={setSelectedId}
-          />
-        </aside>
+      <TaskList
+        tasks={trainingSet.tasks}
+        answers={state.answers}
+        disabled={state.status === "submitted"}
+        onAnswerChange={handleAnswerChange}
+      />
 
-        <div className="app__content">
-          {/* Если попытка завершена — показываем обзор, иначе карточку */}
-          {isSubmitted ? (
-            <div className="task-card">
-              <h2>Обзор ответов</h2>
-              <ul>
-                {mainSet.tasks.map(t => {
-                  const ans = answers.find(a => a.taskId === t.id);
-                  return (
-                    <li key={t.id} style={{ marginBottom: "1rem" }}>
-                      <strong>{t.id}:</strong> {t.prompt} <br />
-                      <span style={{ color: isAnswerValid(ans) ? "green" : "red" }}>
-                        {ans?.kind === "single-choice" ? `Выбрано: ${ans.optionId}` : 
-                         ans?.kind === "short-text" ? `Текст: ${ans.text || "(пусто)"}` : 
-                         "Нет ответа"}
-                      </span>
-                    </li>
-                  );
-                })}
-              </ul>
-              <button type="button" onClick={handleRestart} style={{ marginTop: "1rem" }}>
-                Начать заново
-              </button>
-            </div>
-          ) : (
-            <>
-              <TaskCard 
-                task={selectedTask} 
-                answer={currentAnswer}
-                onChange={handleAnswerChange}
-                disabled={isSubmitted} // Блокируем поля, если завершено (хотя мы скрываем карточку)
-              />
-              
-              <div className="app__navigation" style={{ marginTop: "1rem", display: "flex", gap: "10px" }}>
-                <button type="button" onClick={handlePrev} disabled={currentIndex === 0}>
-                  Назад
-                </button>
-                <button type="button" onClick={handleNext} disabled={currentIndex === totalTasks - 1}>
-                  Вперед
-                </button>
-                <button type="button" onClick={handleFinish} style={{ marginLeft: "auto", background: "#4a90e2", color: "white" }}>
-                  Завершить
-                </button>
-              </div>
-            </>
-          )}
-        </div>
+      <div style={{ marginTop: "20px" }}>
+        <button onClick={handleSubmit} disabled={state.status === "submitted"}>
+          Завершить
+        </button>
+        <button onClick={handleReset} style={{ marginLeft: "10px" }}>
+          Сбросить
+        </button>
       </div>
-    </main>
+      
+      {state.status === "submitted" && (
+        <p style={{ color: "green", marginTop: "10px" }}>Попытка завершена. Изменение ответов заблокировано.</p>
+      )}
+    </div>
   );
 }
